@@ -1,70 +1,277 @@
-# Getting Started with Create React App
+# HRIS Platform Technical Assessment
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+## Overview
 
-## Available Scripts
+This project is a multi-tenant Human Resource Information System (HRIS) built using React.js, Firebase, and Node.js. The system enables employers to manage employee records, upload sensitive documents securely, and enforce strict access control using Firebase Authentication and Security Rules.
 
-In the project directory, you can run:
+The architecture prioritizes **security, scalability, and tenant isolation**.
 
-### `npm start`
+---
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## Tech Stack
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+* React.js (Frontend)
+* Firebase Authentication
+* Firebase Firestore
+* Firebase Storage
+* Firebase Cloud Functions
+* Vercel (Deployment)
 
-### `npm test`
+---
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+## Environment Variables
 
-### `npm run build`
+The following environment variables are required:
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+| Variable                               | Description                  |
+| -------------------------------------- | ---------------------------- |
+| REACT_APP_FIREBASE_API_KEY             | Firebase API Key             |
+| REACT_APP_FIREBASE_AUTH_DOMAIN         | Firebase Auth Domain         |
+| REACT_APP_FIREBASE_PROJECT_ID          | Firebase Project ID          |
+| REACT_APP_FIREBASE_STORAGE_BUCKET      | Firebase Storage Bucket      |
+| REACT_APP_FIREBASE_MESSAGING_SENDER_ID | Firebase Messaging Sender ID |
+| REACT_APP_FIREBASE_APP_ID              | Firebase App ID              |
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+### Local Setup
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+1. Create a `.env` file in `/client`
+2. Add the variables above
+3. Run `npm install`
+4. Run `npm start`
 
-### `npm run eject`
+---
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+## Authentication & Authorization
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+### Approach
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+Authentication is handled using Firebase Auth with email/password login.
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+Authorization is implemented using **Firebase Custom Claims**.
 
-## Learn More
+### Why Custom Claims?
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+Custom Claims are stored securely in Firebase Auth tokens and cannot be modified by the client.
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+If roles were stored in Firestore:
 
-### Code Splitting
+* A malicious user could modify their role field
+* They could escalate privileges (e.g., become admin)
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+Custom Claims prevent:
 
-### Analyzing the Bundle Size
+* Role tampering
+* Unauthorized privilege escalation
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+---
 
-### Making a Progressive Web App
+## Firestore Data Model
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+### Structure Choice: Top-Level Collection
 
-### Advanced Configuration
+Collection: `employees`
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+Each document:
 
-### Deployment
+```
+{
+  fullName: string,
+  nationalId: string,
+  jobTitle: string,
+  department: string,
+  startDate: timestamp,
+  status: string,
+  employerId: string
+}
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+### Justification
 
-### `npm run build` fails to minify
+1. Enables efficient querying across employees
+2. Supports indexing and scalability
+3. Avoids deeply nested queries
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+### Tenant Isolation
+
+Each document includes `employerId`, which is matched against `request.auth.uid`.
+
+This prevents:
+
+* Employer A accessing Employer B’s data
+* Enumeration attacks across tenants
+
+### Future Extensibility
+
+Employees can later be upgraded to full users by linking:
+
+```
+employee.userId = Firebase Auth UID
+```
+
+No migration required.
+
+---
+
+## Firestore Security Rules
+
+Security rules enforce:
+
+* Only authenticated users can access data
+* Employers can only access their own records
+* Admins (via custom claims) can access all data
+* `createdAt` cannot be modified
+* Role fields cannot be changed by clients
+
+Example reasoning:
+
+```
+// Prevents an employer from accessing another employer's employees
+```
+
+---
+
+## File Upload & Storage
+
+### Storage Path
+
+```
+Documents/{employerId}/{employeeId}/{YYYY-MM}/{filename}.pdf
+```
+
+### Security Approach
+
+* Only authenticated users can upload
+* Access restricted to matching employerId
+* Files are NOT publicly accessible
+
+### Public URL vs Signed URL
+
+* Public URL → accessible by anyone (insecure)
+* Signed URL → time-limited secure access
+
+This system uses **authenticated access**, preventing unauthorized downloads.
+
+---
+
+## Cloud Function (SendGrid Email)
+
+### Trigger
+
+Firestore `onCreate` event for new documents.
+
+### Why Cloud Function?
+
+If implemented in frontend:
+
+* API key would be exposed
+* Attackers could send unlimited emails
+* Could lead to spam abuse and billing issues
+
+### Protected Approach
+
+* SendGrid key stored securely in environment variables
+* Function runs server-side
+* Errors handled gracefully
+
+---
+
+## Firestore Backups
+
+### Approach
+
+* Use Cloud Scheduler
+* Trigger Firestore export daily
+
+### Storage
+
+* Google Cloud Storage bucket
+* Naming: `hris-backups-{date}`
+
+### Retention Policy
+
+* 30–90 days recommended
+
+### Verification
+
+* Restore backup to staging environment
+* Validate data integrity
+
+---
+
+## Architecture Overview
+
+System Flow:
+
+1. User logs in via Firebase Auth
+2. Token includes Custom Claims (role)
+3. React app renders protected routes
+4. Firestore rules enforce access control
+5. File uploads stored in Firebase Storage
+6. Cloud Function triggers email notification
+
+---
+
+## Security Review
+
+### Authentication
+
+* Firebase Auth ensures identity verification
+* Unauthorized users cannot access system
+
+### Authorization
+
+* Firestore + Storage rules enforce tenant isolation
+* Custom Claims prevent privilege escalation
+
+### Secrets Management
+
+* API keys stored in `.env`
+* SendGrid key stored in Firebase environment
+
+### Known Gaps
+
+* No UI validation for roles yet
+* No audit logging
+* No rate limiting
+
+---
+
+## Honest Gaps & Improvements
+
+### Incomplete Areas
+
+* Full admin dashboard not implemented
+* Email UI not fully customizable
+* No advanced error handling UI
+
+### Risks
+
+* Limited UI feedback
+* Minimal validation
+
+### Next Steps (Given 1 Week)
+
+* Implement role-based UI rendering
+* Improve UI/UX
+* Add audit logs
+* Add pagination and search
+* Strengthen validation
+
+---
+
+## Deployment
+
+* Hosted on Vercel
+* Firebase backend services connected
+
+---
+
+## Conclusion
+
+This project demonstrates a secure, scalable HRIS platform with strong emphasis on:
+
+* Tenant isolation
+* Secure authentication and authorization
+* Cloud-based architecture
+
+The system is designed for production readiness with clear pathways for extension.
